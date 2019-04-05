@@ -58,12 +58,11 @@ import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doThrow;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.google.cloud.ServiceOptions;
 import com.google.cloud.datastore.Datastore;
 import com.google.cloud.datastore.DatastoreException;
 import com.google.cloud.datastore.Entity;
@@ -245,7 +244,10 @@ public class DatastoreStorageTest {
   @Before
   public void setUp() throws Exception {
     MockitoAnnotations.initMocks(this);
-    datastore = spy(new CheckedDatastore(helper.getOptions().getService()));
+    datastore = spy(new CheckedDatastore(helper.getOptions().toBuilder()
+        .setRetrySettings(ServiceOptions.getDefaultRetrySettings())
+        .build()
+        .getService()));
     storage = new DatastoreStorage(datastore, Duration.ZERO, DatastoreStorageTransaction::new, executor);
   }
 
@@ -800,7 +802,7 @@ public class DatastoreStorageTest {
   }
 
   @Test
-  public void runInTransactionShouldCallFunctionAndCommit() throws Exception {
+  public void runInTransactionShouldCallFunction() throws Exception {
     final DatastoreStorage storage = new DatastoreStorage(datastore, Duration.ZERO, storageTransactionFactory, executor);
     final CheckedDatastoreTransaction transaction = datastore.newTransaction();
     final DatastoreStorageTransaction storageTransaction = spy(new DatastoreStorageTransaction(transaction));
@@ -812,12 +814,10 @@ public class DatastoreStorageTest {
 
     assertThat(result, is("foo"));
     verify(transactionFunction).apply(storageTransaction);
-    verify(storageTransaction).commit();
-    verify(storageTransaction, never()).rollback();
   }
 
   @Test
-  public void runInTransactionShouldCallFunctionAndRollbackOnFailure() throws Exception {
+  public void runInTransactionShouldPropagateUserException() throws Exception {
     final DatastoreStorage storage = new DatastoreStorage(datastore, Duration.ZERO, storageTransactionFactory, executor);
     final CheckedDatastoreTransaction transaction = datastore.newTransaction();
     final DatastoreStorageTransaction storageTransaction = spy(new DatastoreStorageTransaction(transaction));
@@ -836,82 +836,10 @@ public class DatastoreStorageTest {
     }
 
     verify(transactionFunction).apply(storageTransaction);
-    verify(storageTransaction, never()).commit();
-    verify(storageTransaction).rollback();
   }
 
   @Test
-  public void runInTransactionShouldCallFunctionAndRollbackOnPreCommitConflict() throws Exception {
-    final DatastoreStorage storage = new DatastoreStorage(datastore, Duration.ZERO, storageTransactionFactory, executor);
-    final CheckedDatastoreTransaction transaction = datastore.newTransaction();
-    final DatastoreStorageTransaction storageTransaction = spy(new DatastoreStorageTransaction(transaction));
-    when(storageTransactionFactory.apply(any())).thenReturn(storageTransaction);
-
-    final Exception expectedException = new DatastoreException(10, "", "");
-    when(transactionFunction.apply(any())).thenThrow(expectedException);
-
-    try {
-      storage.runInTransaction(transactionFunction);
-      fail("Expected exception!");
-    } catch (TransactionException e) {
-      assertTrue(e.isConflict());
-    }
-
-    verify(transactionFunction).apply(storageTransaction);
-    verify(storageTransaction, never()).commit();
-    verify(storageTransaction).rollback();
-  }
-
-  @Test
-  public void runInTransactionShouldCallFunctionAndRollbackOnCommitConflict() throws Exception {
-    final DatastoreStorage storage = new DatastoreStorage(datastore, Duration.ZERO, storageTransactionFactory, executor);
-    final CheckedDatastoreTransaction transaction = datastore.newTransaction();
-    final DatastoreStorageTransaction storageTransaction = spy(new DatastoreStorageTransaction(transaction));
-    when(storageTransactionFactory.apply(any())).thenReturn(storageTransaction);
-
-    final DatastoreException datastoreException = new DatastoreException(1, "", "");
-    final TransactionException expectedException = new TransactionException(datastoreException);
-    when(transactionFunction.apply(any())).thenReturn("");
-    doThrow(expectedException).when(storageTransaction).commit();
-
-    try {
-      storage.runInTransaction(transactionFunction);
-      fail("Expected exception!");
-    } catch (TransactionException e) {
-      assertThat(e, is(expectedException));
-    }
-
-    verify(transactionFunction).apply(storageTransaction);
-    verify(storageTransaction).rollback();
-  }
-
-  @Test
-  public void runInTransactionShouldThrowIfRollbackFailsAfterConflict() throws Exception {
-    final DatastoreStorage storage = new DatastoreStorage(datastore, Duration.ZERO, storageTransactionFactory, executor);
-    final CheckedDatastoreTransaction transaction = datastore.newTransaction();
-    final DatastoreStorageTransaction storageTransaction = spy(new DatastoreStorageTransaction(transaction));
-    when(storageTransactionFactory.apply(any())).thenReturn(storageTransaction);
-
-    when(transactionFunction.apply(any())).thenReturn("");
-    final DatastoreException datastoreException = new DatastoreException(1, "", "");
-    doThrow(new TransactionException(datastoreException)).when(storageTransaction).commit();
-    final TransactionException expectedException = new TransactionException(datastoreException);
-    doThrow(expectedException).when(storageTransaction).rollback();
-
-    try {
-      storage.runInTransaction(transactionFunction);
-      fail("Expected exception!");
-    } catch (TransactionException e) {
-      assertFalse(e.isConflict());
-      assertThat(e, is(expectedException));
-    }
-
-    verify(transactionFunction).apply(storageTransaction);
-    verify(storageTransaction).rollback();
-  }
-
-  @Test
-  public void runInTransactionShouldThrowTransactionExceptionOnDatastoreIOException() throws Exception {
+  public void runInTransactionShouldPropagateDatastoreIOException() throws Exception {
     var storage = new DatastoreStorage(datastore, Duration.ZERO, storageTransactionFactory, executor);
     var transaction = datastore.newTransaction();
     var storageTransaction = spy(new DatastoreStorageTransaction(transaction));
@@ -921,37 +849,12 @@ public class DatastoreStorageTest {
     var datastoreIOException = new DatastoreIOException(datastoreException);
     when(transactionFunction.apply(any())).thenThrow(datastoreIOException);
 
-    try {
-      storage.runInTransaction(transactionFunction);
-      fail("Expected exception!");
-    } catch (TransactionException e) {
-      assertThat(e.getCause(), is(datastoreException));
-    }
-
-    verify(transactionFunction).apply(storageTransaction);
-    verify(storageTransaction).rollback();
+    exception.expect(DatastoreIOException.class);
+    storage.runInTransaction(transactionFunction);
   }
 
   @Test
-  public void runInTransactionShouldThrowIfDatastoreNewTransactionFails() throws Exception {
-    CheckedDatastore datastore = mock(CheckedDatastore.class);
-    final DatastoreStorage storage = new DatastoreStorage(datastore, Duration.ZERO, storageTransactionFactory, executor);
-    when(datastore.newTransaction()).thenThrow(new DatastoreIOException(new DatastoreException(1, "", "")));
-
-    when(transactionFunction.apply(any())).thenReturn("");
-
-    try {
-      storage.runInTransaction(transactionFunction);
-      fail("Expected exception!");
-    } catch (TransactionException e) {
-      assertFalse(e.isConflict());
-    }
-
-    verify(transactionFunction, never()).apply(any());
-  }
-
-  @Test
-  public void shouldReturnResource() throws IOException {
+  public void shouldReturnResource() throws Exception {
     storage.runInTransaction(tx -> {
       tx.store(RESOURCE1);
       tx.store(RESOURCE2);

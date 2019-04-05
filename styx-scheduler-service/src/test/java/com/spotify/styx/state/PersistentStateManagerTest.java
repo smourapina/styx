@@ -259,11 +259,8 @@ public class PersistentStateManagerTest {
     reset(storage);
     when(storage.getLatestStoredCounter(any())).thenReturn(Optional.empty());
     when(transaction.workflow(INSTANCE.workflowId())).thenReturn(Optional.of(WORKFLOW));
-    DatastoreException datastoreException = new DatastoreException(1, "", "");
-    TransactionException transactionException = spy(new TransactionException(datastoreException));
+    when(transaction.readActiveState(INSTANCE)).thenReturn(Optional.of(INSTANCE_NEW_STATE));
 
-    when(transactionException.isAlreadyExists()).thenReturn(true);
-    doThrow(transactionException).when(transaction).writeActiveState(any(), any());
     when(storage.runInTransaction(any())).thenAnswer(a ->
         a.<TransactionFunction>getArgument(0).apply(transaction));
 
@@ -281,12 +278,7 @@ public class PersistentStateManagerTest {
     when(transaction.workflow(INSTANCE.workflowId())).thenReturn(Optional.of(WORKFLOW));
     final DatastoreException datastoreException = new DatastoreException(1, "", "");
     final TransactionException transactionException = spy(new TransactionException(datastoreException));
-    when(transactionException.isConflict()).thenReturn(true);
-    when(storage.runInTransaction(any())).thenAnswer(a -> {
-      a.<TransactionFunction>getArgument(0)
-          .apply(transaction);
-      throw transactionException;
-    });
+    when(storage.runInTransaction(any())).thenThrow(transactionException);
 
     try {
       stateManager.trigger(INSTANCE, TRIGGER1, PARAMETERS);

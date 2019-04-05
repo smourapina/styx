@@ -70,4 +70,16 @@ class CheckedDatastore extends CheckedDatastoreReaderWriter {
   Key allocateId(IncompleteKey newKey) throws IOException {
     return call(() -> datastore.allocateId(newKey));
   }
+
+  /**
+   * @see Datastore#runInTransaction(Datastore.TransactionCallable)
+   * @throws DatastoreIOException if the function or the underlying client throws any exception.
+   */
+  <T> T runInTransaction(Datastore.TransactionCallable<T> f) throws DatastoreIOException {
+    try {
+      return datastore.runInTransaction(f);
+    } catch (DatastoreException e) {
+      throw new DatastoreIOException(e);
+    }
+  }
 }

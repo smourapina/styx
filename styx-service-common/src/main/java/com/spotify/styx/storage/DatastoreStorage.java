@@ -40,7 +40,6 @@ import static java.util.stream.Collectors.toSet;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.google.cloud.Timestamp;
-import com.google.cloud.datastore.DatastoreException;
 import com.google.cloud.datastore.DatastoreReader;
 import com.google.cloud.datastore.Entity;
 import com.google.cloud.datastore.EntityQuery;
@@ -52,6 +51,7 @@ import com.google.cloud.datastore.StringValue;
 import com.google.cloud.datastore.StructuredQuery.CompositeFilter;
 import com.google.cloud.datastore.StructuredQuery.Filter;
 import com.google.cloud.datastore.StructuredQuery.PropertyFilter;
+import com.google.cloud.datastore.Transaction;
 import com.google.cloud.datastore.Value;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Throwables;
@@ -76,9 +76,7 @@ import com.spotify.styx.state.Message;
 import com.spotify.styx.state.RunState;
 import com.spotify.styx.state.RunState.State;
 import com.spotify.styx.state.StateData;
-import com.spotify.styx.util.FnWithException;
 import com.spotify.styx.util.MDCUtil;
-import com.spotify.styx.util.ResourceNotFoundException;
 import com.spotify.styx.util.TimeUtil;
 import com.spotify.styx.util.TriggerInstantSpec;
 import com.spotify.styx.util.TriggerUtil;
@@ -276,7 +274,7 @@ public class DatastoreStorage implements Closeable {
   }
 
   void store(Workflow workflow) throws IOException {
-    storeWithRetries(() -> runInTransaction(tx -> tx.store(workflow)));
+    runInTransaction(tx -> tx.store(workflow));
   }
 
   Optional<Workflow> workflow(WorkflowId workflowId) throws IOException {
@@ -289,14 +287,14 @@ public class DatastoreStorage implements Closeable {
   }
 
   void delete(WorkflowId workflowId) throws IOException {
-    storeWithRetries(() -> runInTransaction(tx -> {
+    runInTransaction(tx -> {
       tx.deleteWorkflow(workflowId);
       return null;
-    }));
+    });
   }
 
   public void updateNextNaturalTrigger(WorkflowId workflowId, TriggerInstantSpec triggerSpec) throws IOException {
-    storeWithRetries(() -> runInTransaction(tx -> tx.updateNextNaturalTrigger(workflowId, triggerSpec)));
+    runInTransaction(tx -> tx.updateNextNaturalTrigger(workflowId, triggerSpec));
   }
 
   public Map<Workflow, TriggerInstantSpec> workflowsWithNextNaturalTrigger() throws IOException {
@@ -521,7 +519,7 @@ public class DatastoreStorage implements Closeable {
 
   WorkflowInstance writeActiveState(WorkflowInstance workflowInstance, RunState state)
       throws IOException {
-    return storeWithRetries(() -> runInTransaction(tx -> tx.writeActiveState(workflowInstance, state)));
+    return runInTransaction(tx -> tx.writeActiveState(workflowInstance, state));
   }
 
   static List<Key> activeWorkflowInstanceIndexShardKeys(KeyFactory keyFactory) {
@@ -612,11 +610,11 @@ public class DatastoreStorage implements Closeable {
   }
 
   void deleteActiveState(WorkflowInstance workflowInstance) throws IOException {
-    storeWithRetries(() -> runInTransaction(tx -> tx.deleteActiveState(workflowInstance)));
+    runInTransaction(tx -> tx.deleteActiveState(workflowInstance));
   }
 
   void patchState(WorkflowId workflowId, WorkflowState state) throws IOException {
-    storeWithRetries(() -> runInTransaction(tx -> tx.patchState(workflowId, state)));
+    runInTransaction(tx -> tx.patchState(workflowId, state));
   }
 
   public WorkflowState workflowState(WorkflowId workflowId) throws IOException {
@@ -633,36 +631,6 @@ public class DatastoreStorage implements Closeable {
         .ifPresent(builder::nextNaturalOffsetTrigger);
 
     return builder.build();
-  }
-
-  private <T> T storeWithRetries(FnWithException<T, IOException> storingOperation) throws IOException {
-    int storeRetries = 0;
-
-    while (storeRetries < MAX_RETRIES) {
-      try {
-        return storingOperation.apply();
-      } catch (ResourceNotFoundException e) {
-        throw e;
-      } catch (DatastoreException | IOException e) {
-        if (e.getCause() instanceof ResourceNotFoundException) {
-          throw (ResourceNotFoundException) e.getCause();
-        }
-
-        storeRetries++;
-        if (storeRetries == MAX_RETRIES) {
-          throw e;
-        }
-
-        LOG.warn(String.format("Failed to read/write from/to Datastore (attempt #%d)", storeRetries), e);
-        try {
-          Thread.sleep(retryBaseDelay.toMillis());
-        } catch (InterruptedException e1) {
-          throw Throwables.propagate(e1);
-        }
-      }
-    }
-
-    throw new IOException("This should never happen");
   }
 
   private void workflowQuery(Query<Entity> query, IOConsumer<Entity> consumer) throws IOException {
@@ -796,10 +764,10 @@ public class DatastoreStorage implements Closeable {
   }
 
   void storeResource(Resource resource) throws IOException {
-    storeWithRetries(() -> runInTransaction(transaction -> {
+    runInTransaction(transaction -> {
       transaction.store(resource);
       return null;
-    }));
+    });
   }
 
   List<Resource> getResources() throws IOException {
@@ -817,10 +785,7 @@ public class DatastoreStorage implements Closeable {
    * we cannot do everything in one transaction.
    */
   void deleteResource(String id) throws IOException {
-    storeWithRetries(() -> {
-      datastore.delete(datastore.newKeyFactory().setKind(KIND_COUNTER_LIMIT).newKey(id));
-      return null;
-    });
+    datastore.delete(datastore.newKeyFactory().setKind(KIND_COUNTER_LIMIT).newKey(id));
     deleteShardsForCounter(id);
   }
 
@@ -834,10 +799,7 @@ public class DatastoreStorage implements Closeable {
     // this is a safe guard to not to exceed max number of entities in one batch write
     // because in practice number of shards is much smaller
     for (List<Key> batch : Lists.partition(shards, MAX_NUMBER_OF_ENTITIES_IN_ONE_BATCH_WRITE)) {
-      storeWithRetries(() -> {
         datastore.delete(batch.toArray(new Key[0]));
-        return null;
-      });
     }
   }
 
@@ -937,7 +899,7 @@ public class DatastoreStorage implements Closeable {
   }
 
   void storeBackfill(Backfill backfill) throws IOException {
-    storeWithRetries(() -> runInTransaction(tx -> tx.store(backfill)));
+    runInTransaction(tx -> tx.store(backfill));
   }
 
   private <T> Stream<T> readStream(Entity entity, String property) {
@@ -977,30 +939,42 @@ public class DatastoreStorage implements Closeable {
 
   public <T, E extends Exception> T runInTransaction(TransactionFunction<T, E> f)
       throws IOException, E {
-    final StorageTransaction tx = newTransaction();
     try {
-      final T value = f.apply(tx);
-      tx.commit();
-      return value;
+      return datastore.runInTransaction(rw -> {
+        try {
+          var transaction = new CheckedDatastoreTransaction(datastore, (Transaction) rw);
+          return f.apply(storageTransactionFactory.apply(transaction));
+        } catch (DatastoreIOException e) {
+          // Unwrap so it can be retried
+          throw e.getCause();
+        } catch (RuntimeException | Error e) {
+          // Propagate as-is
+          throw e;
+        } catch (Exception e) {
+          // Wrap for propagation
+          throw new UserException(e);
+        }
+      });
     } catch (DatastoreIOException e) {
-      throw new TransactionException(e.getCause());
-    } catch (DatastoreException e) {
-      throw new TransactionException(e);
-    } finally {
-      if (tx.isActive()) {
-        tx.rollback();
+      var dex = e.getCause();
+      var cause = dex.getCause();
+      if (cause instanceof DatastoreIOException) {
+        throw (DatastoreIOException) cause;
       }
+      if (cause instanceof UserException) {
+        var innerCause = cause.getCause();
+        Throwables.propagateIfPossible(innerCause, IOException.class);
+        throw (E) innerCause;
+      }
+      throw e;
     }
   }
 
-  private StorageTransaction newTransaction() throws TransactionException {
-    final CheckedDatastoreTransaction transaction;
-    try {
-      transaction = datastore.newTransaction();
-    } catch (DatastoreIOException e) {
-      throw new TransactionException(e.getCause());
+  private static class UserException extends Exception {
+
+    private UserException(Throwable cause) {
+      super(cause);
     }
-    return storageTransactionFactory.apply(transaction);
   }
 
   Map<Integer, Long> shardsForCounter(String counterId) throws IOException {
