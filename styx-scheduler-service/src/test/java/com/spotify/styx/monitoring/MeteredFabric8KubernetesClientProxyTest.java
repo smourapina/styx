@@ -21,15 +21,10 @@
 package com.spotify.styx.monitoring;
 
 import static org.junit.Assert.fail;
-import static org.mockito.Matchers.any;
-import static org.mockito.Matchers.anyString;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.verify;
 
-import com.spotify.styx.docker.DockerRunner;
-import com.spotify.styx.docker.DockerRunner.RunSpec;
-import com.spotify.styx.docker.InvalidExecutionException;
-import com.spotify.styx.model.WorkflowInstance;
+import com.spotify.styx.docker.Fabric8KubernetesClient;
 import com.spotify.styx.util.Time;
 import io.fabric8.kubernetes.api.model.Status;
 import io.fabric8.kubernetes.client.KubernetesClientException;
@@ -47,14 +42,12 @@ import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnitRunner;
 
 @RunWith(MockitoJUnitRunner.class)
-public class MeteredDockerRunnerProxyTest {
+public class MeteredFabric8KubernetesClientProxyTest {
 
   @Rule
   public ExpectedException expect = ExpectedException.none();
 
-  @Mock private WorkflowInstance workflowInstance;
-  @Mock private RunSpec runSpec;
-  @Mock private DockerRunner dockerRunner;
+  @Mock private Fabric8KubernetesClient fabric8KubernetesClient;
   @Mock private Stats stats;
 
   private Instant now = Instant.now();
@@ -63,39 +56,38 @@ public class MeteredDockerRunnerProxyTest {
   private int pos = 0;
   private Time time = () -> times.get(pos++);
 
-  private DockerRunner proxy;
+  private Fabric8KubernetesClient proxy;
 
   @Before
   public void setUp() {
-    proxy = MeteredDockerRunnerProxy.instrument(dockerRunner, stats, time);
+    proxy = MeteredFabric8KubernetesClientProxy.instrument(fabric8KubernetesClient, stats, time);
   }
 
   @Test
-  public void instrumentDockerMethod() {
-    proxy.cleanup(workflowInstance, "barbaz");
+  public void instrumentClientMethod() {
+    proxy.listPods();
 
-    verify(dockerRunner).cleanup(workflowInstance, "barbaz");
-    verify(stats).recordDockerOperation("cleanup", 123, "success");
+    verify(fabric8KubernetesClient).listPods();
+    verify(stats).recordDockerOperation("listPods", 123, "success");
   }
 
   @Test
   public void surfaceExceptions() {
-    doThrow(new RuntimeException("with message")).when(dockerRunner)
-        .cleanup(any(WorkflowInstance.class), anyString());
+    doThrow(new RuntimeException("with message")).when(fabric8KubernetesClient).listPods();
 
     expect.expect(RuntimeException.class);
     expect.expectMessage("with message");
 
-    proxy.cleanup(workflowInstance, "foo");
+    proxy.listPods();
   }
 
   @Test
-  public void reportKubernetesClientException() throws Exception {
+  public void reportKubernetesClientException() {
     doThrow(new KubernetesClientException("enhance your calm", 429, new Status()))
-        .when(dockerRunner).start(any(), any());
+        .when(fabric8KubernetesClient).listPods();
 
     try {
-      proxy.start(workflowInstance, runSpec);
+      proxy.listPods();
       fail("Expected exception");
     } catch (Exception ignored) {
     }
@@ -104,12 +96,12 @@ public class MeteredDockerRunnerProxyTest {
   }
 
   @Test
-  public void reportKubernetesClientTimeoutException() throws Exception {
+  public void reportKubernetesClientTimeoutException() {
     doThrow(new KubernetesClientTimeoutException(List.of(), 10L, TimeUnit.SECONDS))
-        .when(dockerRunner).start(any(), any());
+        .when(fabric8KubernetesClient).listPods();
 
     try {
-      proxy.start(workflowInstance, runSpec);
+      proxy.listPods();
       fail("Expected exception");
     } catch (Exception ignored) {
     }
@@ -118,25 +110,11 @@ public class MeteredDockerRunnerProxyTest {
   }
 
   @Test
-  public void reportInvalidExecutionException() throws Exception {
-    doThrow(new InvalidExecutionException("Maximum number of keys on service account reached"))
-        .when(dockerRunner).start(any(), any());
+  public void reportUnknownError() {
+    doThrow(new RuntimeException()).when(fabric8KubernetesClient).listPods();
 
     try {
-      proxy.start(workflowInstance, runSpec);
-      fail("Expected exception");
-    } catch (Exception ignored) {
-    }
-
-    verify(stats).recordDockerOperationError("start", "invalid-execution");
-  }
-
-  @Test
-  public void reportUnknownError() throws Exception {
-    doThrow(new RuntimeException()).when(dockerRunner).start(any(), any());
-
-    try {
-      proxy.start(workflowInstance, runSpec);
+      proxy.listPods();
       fail("Expected exception");
     } catch (Exception ignored) {
     }
